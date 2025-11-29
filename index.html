@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Moldura</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: sans-serif;
+    }
+    #video, #overlay {
+      position: absolute;
+      width: 100vw; height: 100vh;
+      object-fit: cover;
+    }
+    #overlay { pointer-events: none; }
+
+    #buttons {
+      position: absolute;
+      bottom: 50px;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      z-index: 10;
+    }
+    button {
+      width: 70px; height: 70px;
+      border-radius: 50%;
+      border: none;
+      background: white;
+      font-size: 28px;
+      cursor: pointer;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+
+    #preview-container, #video-preview-container {
+      position: absolute;
+      bottom: 120px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 11;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    #photo-preview, #video-preview {
+      width: 85vw;
+      max-width: 280px;
+      border: 3px solid white;
+      border-radius: 10px;
+      margin-bottom: 8px;
+      background: #000;
+    }
+
+    #save-btn, #retry-btn, #save-video-btn {
+      background: #4CAF50;
+      color: white;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 15px;
+      margin-top: 5px;
+      width: 180px;
+    }
+
+    #instructions, #video-instructions, #android-warning {
+      color: #fff;
+      font-size: 13px;
+      font-weight: bold;
+      background-color: rgba(0,0,0,0.6);
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+      text-align: center;
+      max-width: 90%;
+      display: none;
+    }
+
+    #recording-indicator {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 12;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: bold;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay muted playsinline></video>
+  <img id="overlay" src="moldura.png" />
+
+  <div id="recording-indicator">🔴 REC 00:00</div>
+
+  <div id="buttons">
+    <button id="switch-camera">🔄</button>
+    <button id="capture">📸</button>
+    <button id="start-recording">🎥</button>
+    <button id="stop-recording" style="display:none;">⏹</button>
+  </div>
+
+  <canvas id="canvas" style="display:none;"></canvas>
+  <canvas id="recordingCanvas" style="display:none;"></canvas>
+
+  <div id="preview-container">
+    <img id="photo-preview" />
+    <button id="save-btn">Salvar na galeria</button>
+    <button id="retry-btn">Tirar outra</button>
+    <div id="instructions">
+      Se estiver no iPhone:<br>Toque e segure a imagem e selecione “Salvar na Fototeca”.
+    </div>
+  </div>
+
+  <div id="video-preview-container">
+    <video id="video-preview" controls playsinline></video>
+    <button id="save-video-btn">Salvar vídeo</button>
+
+    <div id="video-instructions">
+      Se estiver no iPhone:<br>
+      Vá em Arquivos → toque no vídeo → Compartilhar → Salvar Vídeo.
+    </div>
+
+    <div id="android-warning">
+      ⚠️ Aviso para Android:<br>
+      A gravação de vídeo pode não funcionar em todos os aparelhos.<br>
+      Alguns celulares salvam o vídeo em um formato que pode travar ou não abrir em apps como WhatsApp/Instagram.<br>
+      Você pode tentar converter para MP4 usando um app de conversão, mas não é garantido.<br>
+      A função de FOTO funciona perfeitamente em todos os aparelhos. 💛
+    </div>
+  </div>
+
+  <script>
+    const isiOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const isAndroid = /Android/i.test(navigator.userAgent);
+
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const canvas = document.getElementById('canvas');
+    const captureBtn = document.getElementById('capture');
+    const switchCameraBtn = document.getElementById('switch-camera');
+    const previewContainer = document.getElementById('preview-container');
+    const photoPreview = document.getElementById('photo-preview');
+    const saveBtn = document.getElementById('save-btn');
+    const retryBtn = document.getElementById('retry-btn');
+    const instructions = document.getElementById('instructions');
+
+    const startRecordBtn = document.getElementById('start-recording');
+    const stopRecordBtn = document.getElementById('stop-recording');
+    const recordingIndicator = document.getElementById('recording-indicator');
+    const recordingCanvas = document.getElementById('recordingCanvas');
+
+    const videoPreviewContainer = document.getElementById('video-preview-container');
+    const videoPreview = document.getElementById('video-preview');
+    const saveVideoBtn = document.getElementById('save-video-btn');
+    const videoInstructions = document.getElementById('video-instructions');
+    const androidWarning = document.getElementById('android-warning');
+
+    let usingFrontCamera = true;
+    let stream;
+    let mediaRecorder;
+    let recordedChunks = [];
+    let isRecording = false;
+    let recordStartTime = 0;
+    let recordTimerInterval;
+
+    async function startCamera() {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+
+      const screenIsPortrait = window.innerHeight >= window.innerWidth;
+      const idealWidth = screenIsPortrait ? 720 : 1280;
+      const idealHeight = screenIsPortrait ? 1280 : 720;
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: usingFrontCamera ? "user" : "environment",
+          width: { ideal: idealWidth },
+          height: { ideal: idealHeight }
+        },
+        audio: true
+      });
+      video.srcObject = stream;
+      video.style.transform = usingFrontCamera ? "scaleX(-1)" : "scaleX(1)";
+    }
+
+    switchCameraBtn.onclick = () => {
+      usingFrontCamera = !usingFrontCamera;
+      startCamera();
+    };
+
+    // FOTO
+    captureBtn.onclick = () => {
+      const ctx = canvas.getContext('2d');
+      const track = stream.getVideoTracks()[0];
+      const settings = track.getSettings();
+      const width = settings.width || 720;
+      const height = settings.height || 1280;
+
+      canvas.width = width; canvas.height = height;
+      if (usingFrontCamera) {
+        ctx.translate(width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, width, height);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(overlay, 0, 0, width, height);
+
+      photoPreview.src = canvas.toDataURL("image/png");
+      previewContainer.style.display = "flex";
+    };
+
+    saveBtn.onclick = () => {
+      const a = document.createElement("a");
+      a.download = "foto-moldura.png";
+      a.href = photoPreview.src;
+      a.click();
+      if (isiOS) instructions.style.display = "block";
+    };
+
+    retryBtn.onclick = () => {
+      previewContainer.style.display = "none";
+      instructions.style.display = "none";
+    };
+
+    // TIMER
+    function startTimer() {
+      recordStartTime = Date.now();
+      recordingIndicator.style.display = "block";
+      recordTimerInterval = setInterval(() => {
+        const sec = Math.floor((Date.now() - recordStartTime) / 1000);
+        const m = String(Math.floor(sec / 60)).padStart(2,"0");
+        const s = String(sec % 60).padStart(2,"0");
+        recordingIndicator.textContent = `🔴 REC ${m}:${s}`;
+      }, 500);
+    }
+    function stopTimer() {
+      clearInterval(recordTimerInterval);
+      recordingIndicator.style.display = "none";
+    }
+
+    // VÍDEO
+    startRecordBtn.onclick = () => {
+      recordedChunks = [];
+      isRecording = true;
+
+      const track = stream.getVideoTracks()[0];
+      const settings = track.getSettings();
+      const width = settings.width || 720;
+      const height = settings.height || 1280;
+
+      recordingCanvas.width = width;
+      recordingCanvas.height = height;
+      const ctx = recordingCanvas.getContext("2d");
+
+      function drawFrame() {
+        if (!isRecording) return;
+        ctx.clearRect(0,0,width,height);
+        if (usingFrontCamera) {
+          ctx.save();
+          ctx.translate(width,0);
+          ctx.scale(-1,1);
+          ctx.drawImage(video,0,0,width,height);
+          ctx.restore();
+        } else {
+          ctx.drawImage(video,0,0,width,height);
+        }
+        ctx.drawImage(overlay,0,0,width,height);
+        requestAnimationFrame(drawFrame);
+      }
+      drawFrame();
+
+      const combinedStream = new MediaStream();
+      recordingCanvas.captureStream(30).getTracks().forEach(t => combinedStream.addTrack(t));
+      stream.getAudioTracks().forEach(t => combinedStream.addTrack(t));
+
+      const mime = isiOS ? "video/mp4" : "video/webm";
+      mediaRecorder = new MediaRecorder(combinedStream, { mimeType: mime });
+
+      mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
+      mediaRecorder.onstop = () => {
+        isRecording = false;
+        stopTimer();
+
+        const blob = new Blob(recordedChunks, { type: mime });
+        const url = URL.createObjectURL(blob);
+
+        videoPreview.src = "";
+        videoPreviewContainer.style.display = "flex";
+
+        if (isiOS) {
+          videoPreview.style.display = "block";
+          videoPreview.src = url;
+          videoPreview.load();
+          androidWarning.style.display = "none";
+        } else {
+          videoPreview.style.display = "none";
+          androidWarning.style.display = "block";
+        }
+
+        saveVideoBtn.onclick = () => {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "video-moldura." + (isiOS ? "mp4" : "webm");
+          a.click();
+          if (isiOS) videoInstructions.style.display = "block";
+        };
+      };
+
+      mediaRecorder.start(200);
+      startTimer();
+      startRecordBtn.style.display = "none";
+      stopRecordBtn.style.display = "inline-block";
+    };
+
+    stopRecordBtn.onclick = () => {
+      if (isRecording && mediaRecorder) mediaRecorder.stop();
+      isRecording = false;
+      stopRecordBtn.style.display = "none";
+      startRecordBtn.style.display = "inline-block";
+    };
+
+    startCamera();
+  </script>
+</body>
+</html>
